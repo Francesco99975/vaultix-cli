@@ -1,3 +1,4 @@
+use auth::{login, signup};
 use clap::Parser;
 use cli::{Commands, Vaultix};
 
@@ -11,15 +12,21 @@ mod keystore;
 mod models;
 mod udid;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Vaultix::parse();
 
     match &args.command {
         Some(Commands::Signup { password }) => {
             match password {
-                Some(password) => {
-                    println!("{}", password);
-                }
+                Some(password) => match signup(&password).await {
+                    Ok(()) => {
+                        println!("Successfully Signed Up! You can now login")
+                    }
+                    Err(err) => {
+                        eprintln!("Could not Signup: {:?}", err.to_string())
+                    }
+                },
                 None => {
                     eprintln!(
                         "No Password specified. Use vaultix signup -p <your-password> to signup"
@@ -29,9 +36,12 @@ fn main() {
         }
         Some(Commands::Login { password }) => {
             match password {
-                Some(password) => {
-                    println!("{}", password);
-                }
+                Some(password) => match login(&password).await {
+                    Ok(token) => {
+                        println!("{}", token)
+                    }
+                    Err(err) => eprintln!("Could not Login: {:?}", err.to_string()),
+                },
                 None => {
                     eprintln!(
                         "No Password specified. Use vaultix login -p <your-password> to signup"

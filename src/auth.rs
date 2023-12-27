@@ -1,26 +1,36 @@
 use chacha20poly1305::{
-    aead::{generic_array::GenericArray, Aead, OsRng},
+    aead::{
+        generic_array::{
+            typenum::{UInt, UTerm},
+            GenericArray,
+        },
+        Aead, OsRng,
+    },
+    consts::{B0, B1},
     AeadCore, KeyInit, XChaCha20Poly1305,
 };
 use ed25519_dalek::{
     pkcs8::{spki::der::pem::LineEnding, EncodePublicKey},
-    SigningKey, VerifyingKey,
+    Signature, Signer, SigningKey, VerifyingKey,
 };
 use error_stack::{Report, Result, ResultExt};
-use rand::{distributions::Standard, Rng};
+use rand::{distributions::Standard, thread_rng, Rng, RngCore};
 use uuid::Uuid;
 
 use crate::{
     crypto::{create_encryption_key, hash},
-    endpoints::{BASE_URL, SIGNUP},
+    endpoints::{BASE_URL, LOGIN, SIGNUP},
     errors::AuthError,
     http::get_client,
-    keystore::{close_vault, open_vault, store_keypair},
-    models::{SignupPayload, JWT},
+    keystore::{
+        close_vault, get_device_id, get_encrypted_keypair, get_nonce, get_salt, get_user_id,
+        open_vault, store_keypair,
+    },
+    models::{LoginPayload, SignupPayload, JWT},
     udid,
 };
 
-pub async fn signup(password: &str) -> Result<String, AuthError> {
+pub async fn signup(password: &str) -> Result<(), AuthError> {
     let user_id = Uuid::new_v4();
     let device_id = udid::get_udid().ok_or_else(|| {
         let message = format!("Could not get Device ID");
@@ -117,10 +127,137 @@ pub async fn signup(password: &str) -> Result<String, AuthError> {
         )));
     }
 
+    // let jwt: JWT = response
+    //     .json()
+    //     .await
+    //     .change_context(AuthError::SignupError(format!("Something went wrong")))
+    //     .attach_printable(format!("Could not parse json response"))?;
+
+    Ok(())
+}
+
+pub async fn login(password: &str) -> Result<String, AuthError> {
+    let password_bytes = password.as_bytes();
+    open_vault().await.map_err(|err| {
+        Report::new(AuthError::LoginError(format!("Could not open vault")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    let encrypted_keypair = get_encrypted_keypair().await.map_err(|err| {
+        Report::new(AuthError::LoginError(format!("Could not retrive keypair")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    let raw_nonce = get_nonce().await.map_err(|err| {
+        Report::new(AuthError::LoginError(format!("Could not retrive nonce")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    let nonce: &GenericArray<u8, UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B1>, B0>, B0>, B0>> =
+        GenericArray::from_slice(raw_nonce.as_slice());
+
+    let salt = get_salt().await.map_err(|err| {
+        Report::new(AuthError::LoginError(format!("Could not retrive salt")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    let raw_user_id = get_user_id().await.map_err(|err| {
+        Report::new(AuthError::LoginError(format!("Could not retrive user id")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    let user_id = String::from_utf8(raw_user_id)
+        .change_context(AuthError::LoginError(format!(
+            "Could not parse user id byte vector"
+        )))
+        .attach_printable(format!("Could not parse user id byte vector"))?;
+
+    let raw_device_id_hash = get_device_id().await.map_err(|err| {
+        Report::new(AuthError::LoginError(format!(
+            "Could not retrive device id hash"
+        )))
+        .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    let device_id_hash = String::from_utf8(raw_device_id_hash)
+        .change_context(AuthError::LoginError(format!(
+            "Could not parse device id byte vector"
+        )))
+        .attach_printable(format!("Could not parse device id byte vector"))?;
+
+    close_vault().await.map_err(|err| {
+        Report::new(AuthError::LoginError(format!("Could not close KeyStore")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    let mut encryption_key = [0u8; 32];
+
+    create_encryption_key(password_bytes, &salt, &mut encryption_key);
+    let xchacha_key: &GenericArray<
+        u8,
+        UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>,
+    > = GenericArray::from_slice(&encryption_key);
+    let cipher = XChaCha20Poly1305::new(xchacha_key);
+
+    let raw_keypair = cipher
+        .decrypt(nonce, encrypted_keypair.as_ref())
+        .map_err(|err| {
+            Report::new(AuthError::LoginError(format!("Could not recreate KeyPair")))
+                .attach_printable(format!("{:?}", err.to_string()))
+        })?;
+
+    let mut secret_key: [u8; 32] = [0u8; 32];
+
+    secret_key.clone_from_slice(&raw_keypair[..]);
+
+    let keypair = SigningKey::from_bytes(&secret_key);
+
+    // Generate a random length for the byte slice
+    let length = thread_rng().gen_range(1..=20);
+    // Create a mutable byte vector with the random length
+    let mut message_bytes = vec![0u8; length];
+    // Use the rand::thread_rng() generator to fill the vector with random bytes
+    thread_rng().fill_bytes(&mut message_bytes);
+
+    let signature: Signature = keypair.sign(message_bytes.as_slice());
+
+    let payload = LoginPayload {
+        user_id,
+        device_id: device_id_hash,
+        message: message_bytes,
+        signature: signature.to_vec(),
+    };
+
+    let client = get_client()
+        .change_context(AuthError::LoginError(format!(
+            "Could not send request to server to Login"
+        )))
+        .attach_printable(format!("Could not login - payload {:?}", payload))?;
+
+    let response = client
+        .post(BASE_URL.to_owned() + LOGIN)
+        .json(&payload)
+        .send()
+        .await
+        .change_context(AuthError::LoginError(format!(
+            "Could not send request to server to Login"
+        )))
+        .attach_printable(format!("Could not login - payload {:?}", payload))?;
+
+    if !response.status().is_success() {
+        return Err(Report::new(AuthError::LoginError(format!(
+            "Unable to Login at the moment"
+        )))
+        .attach_printable(format!(
+            "Signup Response Failed to login - Status: {:?}",
+            response.status().clone()
+        )));
+    }
+
     let jwt: JWT = response
         .json()
         .await
-        .change_context(AuthError::SignupError(format!("Something went wrong")))
+        .change_context(AuthError::LoginError(format!("Something went wrong")))
         .attach_printable(format!("Could not parse json response"))?;
 
     Ok(jwt.token)

@@ -91,9 +91,7 @@ pub async fn store_keypair(
     Ok(())
 }
 
-pub async fn retreive_from_keyring(
-    attributes: [(&str, &str); 1],
-) -> Result<Vec<u8>, Box<dyn Error>> {
+async fn retreive_from_keyring(attributes: [(&str, &str); 1]) -> Result<Vec<u8>, Box<dyn Error>> {
     // initialize secret service (dbus connection and encryption session)
     let ss = SecretService::connect(EncryptionType::Dh).await?;
 
@@ -102,6 +100,36 @@ pub async fn retreive_from_keyring(
     let item = search_items.unlocked.get(0).ok_or("Not Found")?;
 
     let secret = item.get_secret().await?;
+
+    Ok(secret)
+}
+
+pub async fn get_encrypted_keypair() -> Result<Vec<u8>, Box<dyn Error>> {
+    let secret = retreive_from_keyring(ID_CIPHER).await?;
+
+    Ok(secret)
+}
+
+pub async fn get_nonce() -> Result<Vec<u8>, Box<dyn Error>> {
+    let secret = retreive_from_keyring(ID_NONCE).await?;
+
+    Ok(secret)
+}
+
+pub async fn get_salt() -> Result<Vec<u8>, Box<dyn Error>> {
+    let secret = retreive_from_keyring(ID_SALT).await?;
+
+    Ok(secret)
+}
+
+pub async fn get_user_id() -> Result<Vec<u8>, Box<dyn Error>> {
+    let secret = retreive_from_keyring(ID_USER).await?;
+
+    Ok(secret)
+}
+
+pub async fn get_device_id() -> Result<Vec<u8>, Box<dyn Error>> {
+    let secret = retreive_from_keyring(ID_DEVICE).await?;
 
     Ok(secret)
 }
