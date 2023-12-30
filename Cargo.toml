@@ -21,3 +21,4 @@ argon2 = "0.5.1"
 ed25519-dalek = { version = "2.0.0", features = ["rand_core", "pkcs8", "pem"] }
 rand = "0.8.5"
 secret-service = { version = "3.0.0", features = ["rt-tokio-crypto-rust"] }
+serde_json = "1.0.108"

@@ -15,10 +15,9 @@ use ed25519_dalek::{
 };
 use error_stack::{Report, Result, ResultExt};
 use rand::{distributions::Standard, thread_rng, Rng, RngCore};
-use uuid::Uuid;
 
 use crate::{
-    crypto::{create_encryption_key, hash},
+    crypto::create_encryption_key,
     endpoints::{BASE_URL, LOGIN, SIGNUP},
     errors::AuthError,
     http::get_client,
@@ -26,20 +25,23 @@ use crate::{
         close_vault, get_device_id, get_encrypted_keypair, get_nonce, get_salt, get_user_id,
         open_vault, store_keypair,
     },
-    models::{LoginPayload, SignupPayload, JWT},
+    models::{LoginPayload, RegisterResponse, SignupPayload, JWT},
     udid,
 };
 
 pub async fn signup(password: &str) -> Result<(), AuthError> {
-    let user_id = Uuid::new_v4();
-    let device_id = udid::get_udid().ok_or_else(|| {
-        let message = format!("Could not get Device ID");
-        Report::new(AuthError::SignupError(message.clone())).attach_printable(message.clone())
-    })?;
+    // Check if config file exists
 
-    let hashed_device_id = hash(device_id.as_bytes())
-        .change_context(AuthError::SignupError(format!("Could not hash device id")))
-        .attach_printable(format!("Could not hash device id"))?;
+    let device_id = udid::get_udid().map_err(|err| {
+        Report::new(AuthError::SignupError(format!(
+            "Could not get device ID - Error: {}",
+            err.to_string()
+        )))
+        .attach_printable(format!(
+            "Could not get device ID - Error: {}",
+            err.to_string()
+        ))
+    })?;
 
     let password_bytes = password.as_bytes();
 
@@ -64,27 +66,6 @@ pub async fn signup(password: &str) -> Result<(), AuthError> {
             .attach_printable(format!("{:?}", err.to_string()))
         })?;
 
-    open_vault().await.map_err(|err| {
-        Report::new(AuthError::SignupError(format!("Could not open vault")))
-            .attach_printable(format!("{:?}", err.to_string()))
-    })?;
-    store_keypair(
-        &encrypted_keypair,
-        &nonce,
-        &salt,
-        user_id.as_bytes(),
-        hashed_device_id.as_bytes(),
-    )
-    .await
-    .map_err(|err| {
-        Report::new(AuthError::SignupError(format!("Could use KeyStore")))
-            .attach_printable(format!("{:?}", err.to_string()))
-    })?;
-    close_vault().await.map_err(|err| {
-        Report::new(AuthError::SignupError(format!("Could not close KeyStore")))
-            .attach_printable(format!("{:?}", err.to_string()))
-    })?;
-
     let verifying_key: VerifyingKey = signing_key.verifying_key();
     let armored_public_key = verifying_key
         .to_public_key_pem(LineEnding::LF)
@@ -96,8 +77,7 @@ pub async fn signup(password: &str) -> Result<(), AuthError> {
         })?;
 
     let payload = SignupPayload {
-        user_id: user_id.to_string(),
-        device_id: hashed_device_id.to_owned(),
+        device_id: device_id.clone(),
         publickey: armored_public_key,
     };
 
@@ -127,11 +107,39 @@ pub async fn signup(password: &str) -> Result<(), AuthError> {
         )));
     }
 
-    // let jwt: JWT = response
-    //     .json()
-    //     .await
-    //     .change_context(AuthError::SignupError(format!("Something went wrong")))
-    //     .attach_printable(format!("Could not parse json response"))?;
+    let res: RegisterResponse = response
+        .json()
+        .await
+        .change_context(AuthError::SignupError(format!(
+            "Could not parse request json for Signup"
+        )))
+        .attach_printable(format!(
+            "Could not parse request json for Signup - payload: {:?}",
+            payload
+        ))?;
+
+    open_vault().await.map_err(|err| {
+        Report::new(AuthError::SignupError(format!("Could not open vault")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+    store_keypair(
+        &encrypted_keypair,
+        &nonce,
+        &salt,
+        res.user_id.as_bytes(),
+        device_id.as_bytes(),
+    )
+    .await
+    .map_err(|err| {
+        Report::new(AuthError::SignupError(format!("Could use KeyStore")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+    close_vault().await.map_err(|err| {
+        Report::new(AuthError::SignupError(format!("Could not close KeyStore")))
+            .attach_printable(format!("{:?}", err.to_string()))
+    })?;
+
+    //Create Empty Config File
 
     Ok(())
 }
@@ -172,14 +180,14 @@ pub async fn login(password: &str) -> Result<String, AuthError> {
         )))
         .attach_printable(format!("Could not parse user id byte vector"))?;
 
-    let raw_device_id_hash = get_device_id().await.map_err(|err| {
+    let raw_device_id = get_device_id().await.map_err(|err| {
         Report::new(AuthError::LoginError(format!(
             "Could not retrive device id hash"
         )))
         .attach_printable(format!("{:?}", err.to_string()))
     })?;
 
-    let device_id_hash = String::from_utf8(raw_device_id_hash)
+    let device_id = String::from_utf8(raw_device_id)
         .change_context(AuthError::LoginError(format!(
             "Could not parse device id byte vector"
         )))
@@ -223,7 +231,7 @@ pub async fn login(password: &str) -> Result<String, AuthError> {
 
     let payload = LoginPayload {
         user_id,
-        device_id: device_id_hash,
+        device_id,
         message: message_bytes,
         signature: signature.to_vec(),
     };
@@ -245,12 +253,22 @@ pub async fn login(password: &str) -> Result<String, AuthError> {
         .attach_printable(format!("Could not login - payload {:?}", payload))?;
 
     if !response.status().is_success() {
+        let status = response.status().clone();
+        let text = response
+            .text()
+            .await
+            .change_context(AuthError::LoginError(format!(
+                "Something went wrong while checking server error"
+            )))
+            .attach_printable(format!("Could not parse json response for http error"))?;
+
         return Err(Report::new(AuthError::LoginError(format!(
-            "Unable to Login at the moment"
+            "Unable to Login at the moment - Cause: {}",
+            text
         )))
         .attach_printable(format!(
             "Signup Response Failed to login - Status: {:?}",
-            response.status().clone()
+            status
         )));
     }
 
@@ -259,6 +277,8 @@ pub async fn login(password: &str) -> Result<String, AuthError> {
         .await
         .change_context(AuthError::LoginError(format!("Something went wrong")))
         .attach_printable(format!("Could not parse json response"))?;
+
+    //Store Cipher in a global like variable
 
     Ok(jwt.token)
 }

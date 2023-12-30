@@ -27,3 +27,15 @@ impl fmt::Display for CryptoError {
         write!(fmt, "Something went wrong")
     }
 }
+
+#[derive(Debug)]
+pub struct UdidError {
+    pub message: String,
+}
+impl Error for UdidError {}
+
+impl fmt::Display for UdidError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "Could not get device id - Error: {}", self.message)
+    }
+}

@@ -38,7 +38,7 @@ async fn main() {
             match password {
                 Some(password) => match login(&password).await {
                     Ok(token) => {
-                        println!("{}", token)
+                        println!("JWT TOKEN --> {}", token)
                     }
                     Err(err) => eprintln!("Could not Login: {:?}", err.to_string()),
                 },
