@@ -4,22 +4,25 @@ use cli::{Commands, Vaultix};
 
 mod auth;
 mod cli;
+mod config;
 mod crypto;
 mod endpoints;
 mod errors;
 mod http;
 mod keystore;
 mod models;
+mod shared;
 mod udid;
 
 #[tokio::main]
 async fn main() {
+    let shared_data = shared::initialize_data();
     let args = Vaultix::parse();
 
     match &args.command {
         Some(Commands::Signup { password }) => {
             match password {
-                Some(password) => match signup(&password).await {
+                Some(password) => match signup(&password, &shared_data).await {
                     Ok(()) => {
                         println!("Successfully Signed Up! You can now login")
                     }
@@ -36,7 +39,7 @@ async fn main() {
         }
         Some(Commands::Login { password }) => {
             match password {
-                Some(password) => match login(&password).await {
+                Some(password) => match login(&password, &shared_data).await {
                     Ok(token) => {
                         println!("JWT TOKEN --> {}", token)
                     }

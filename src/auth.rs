@@ -26,11 +26,15 @@ use crate::{
         open_vault, store_keypair,
     },
     models::{LoginPayload, RegisterResponse, SignupPayload, JWT},
+    shared::SharedData,
     udid,
 };
 
-pub async fn signup(password: &str) -> Result<(), AuthError> {
+pub async fn signup(password: &str, shared_data: &SharedData) -> Result<(), AuthError> {
     // Check if config file exists
+    if shared_data.lock().unwrap().xchacha_key.is_some() {
+        return Err(AuthError::SignupError(format!("Already Logged in")).into());
+    }
 
     let device_id = udid::get_udid().map_err(|err| {
         Report::new(AuthError::SignupError(format!(
@@ -144,7 +148,7 @@ pub async fn signup(password: &str) -> Result<(), AuthError> {
     Ok(())
 }
 
-pub async fn login(password: &str) -> Result<String, AuthError> {
+pub async fn login(password: &str, shared_data: &SharedData) -> Result<String, AuthError> {
     let password_bytes = password.as_bytes();
     open_vault().await.map_err(|err| {
         Report::new(AuthError::LoginError(format!("Could not open vault")))
@@ -279,6 +283,7 @@ pub async fn login(password: &str) -> Result<String, AuthError> {
         .attach_printable(format!("Could not parse json response"))?;
 
     //Store Cipher in a global like variable
+    shared_data.lock().unwrap().xchacha_key = Some(*xchacha_key);
 
     Ok(jwt.token)
 }
